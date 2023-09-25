@@ -585,10 +585,10 @@ public final class RestrictedSecurity {
                 // Provider with argument (provider name + optional argument).
                 providers.add(pNum - 1, providerName);
 
-                // Remove the provider's optional arguments if there are.
+                // Remove the provider's optional arguments if present.
                 pos = providerName.indexOf(' ');
                 providerName = (pos < 0) ? providerName.trim() : providerName.substring(0, pos).trim();
-                // Remove the provider's class package names if there are.
+                // Remove the provider's class package names if present.
                 pos = providerName.lastIndexOf('.');
                 providerName = (pos < 0) ? providerName : providerName.substring(pos + 1, providerName.length());
                 // Provider without arguments and package names.
@@ -673,7 +673,7 @@ public final class RestrictedSecurity {
                     continue;
                 }
 
-                // Remove the whitespaces in the format separator if there are.
+                // Remove the whitespaces in the format separator if present.
                 providerInfo = providerInfo.trim()
                         .replaceAll("\\[\\s+\\{", "[{")
                         .replaceAll("\\}\\s+\\]", "}]")
@@ -695,18 +695,31 @@ public final class RestrictedSecurity {
                     // For each constraint type, algorithm and attributes.
                     Constraint[] constraints = new Constraint[constrArray.length];
 
+                    Boolean allowFlag;
                     int cNum = 0;
                     for (String constr : constrArray) {
                         String[] input = constr.split(",");
 
-                        // Each constraint must includes 3 fields(type, algorithm, attributes).
-                        if (input.length != 3) {
+                        // Each constraint must includes 4 fields(isAllow, type, algorithm, attributes).
+                        if (input.length != 4) {
                             printStackTraceAndExit("Constraint format is incorrect: " + providerInfo);
                         }
 
-                        String inType = input[0].trim();
-                        String inAlgorithm = input[1].trim();
-                        String inAttributes = input[2].trim();
+                        Boolean inIsAllow = Boolean.valueOf(input[0].trim());
+                        String inType = input[1].trim();
+                        String inAlgorithm = input[2].trim();
+                        String inAttributes = input[3].trim();
+
+                        // All contraints either all allowed or all disallowed.
+                        if (allowFlag == null) {
+                            allowFlag = inIsAllow;
+                        } else {
+                            if (!allowFlag.equals(inIsAllow)) {
+                                printStackTraceAndExit(
+                                        "Constraint format is incorrect. All contraints either all allowed or all disallowed: "
+                                                + providerInfo);
+                            }
+                        }
 
                         // Each attribute must includes 2 fields (key and value) or *.
                         if (!isAsterisk(inAttributes)) {
@@ -720,11 +733,12 @@ public final class RestrictedSecurity {
                             }
                         }
 
-                        Constraint constraint = new Constraint(inType, inAlgorithm, inAttributes);
+                        Constraint constraint = new Constraint(inIsAllow.booleanValue(), inType, inAlgorithm, inAttributes);
 
                         if (debug != null) {
                             debug.println("Loading constraints for security provider: " + providerName
-                                    + " with constraints type: " + inType
+                                    + " with constraints isAllow: " + inIsAllow
+                                    + " type: " + inType
                                     + " algorithm: " + inAlgorithm
                                     + " attributes: " + inAttributes);
                         }
@@ -759,6 +773,10 @@ public final class RestrictedSecurity {
 
             if (constraints == null) {
                 // Disallow unknown providers.
+                if (debug != null) {
+                    debug.println("Security constraints check."
+                            + " Disallow unknown provider: " + providerName);
+                }
                 return false;
             } else if (constraints.length == 0) {
                 // Allow this provider with no constraints.
@@ -769,7 +787,9 @@ public final class RestrictedSecurity {
             String type = service.getType();
             String algorithm = service.getAlgorithm();
 
+            boolean cIsAllow;
             for (Constraint constraint : constraints) {
+                cIsAllow = constraint.isAllow;
                 String cType = constraint.type;
                 String cAlgorithm = constraint.algorithm;
                 String cAttribute = constraint.attributes;
@@ -779,7 +799,7 @@ public final class RestrictedSecurity {
                     continue;
                 }
                 if (!isAsterisk(cAlgorithm) && !algorithm.equalsIgnoreCase(cAlgorithm)) {
-                    // The constraint doesn't apply to the service algorith.
+                    // The constraint doesn't apply to the service algorithm.
                     continue;
                 }
 
@@ -789,16 +809,17 @@ public final class RestrictedSecurity {
                         debug.println("Security constraints check."
                                 + " Service type: " + type
                                 + " Algorithm: " + algorithm
-                                + " is allowed in provider " + providerName);
+                                + " is allowed: " + cIsAllow 
+                                + " in provider: " + providerName);
                     }
-                    return true;
+                    return cIsAllow;
                 }
 
                 // For type and algorithm match, and attribute is not *.
                 // Then continue checking attributes.
                 String[] cAttributeArray = cAttribute.split(":");
 
-                // For each attribute, must be all matched for return allowed.
+                // For each attribute, must be all matched for return allow: cIsAllow.
                 for (String attribute : cAttributeArray) {
                     String[] input = attribute.split("=", 2);
 
@@ -806,16 +827,17 @@ public final class RestrictedSecurity {
                     String cValue = input[1].trim();
                     String sValue = service.getAttribute(cName);
                     if ((sValue == null) || !cValue.equalsIgnoreCase(sValue)) {
-                        // If any attribute doesn't match, return service is not allowed.
+                        // If any attribute doesn't match, return service allow: !cIsAllow.
                         if (debug != null) {
                             debug.println(
                                     "Security constraints check."
                                             + " Service type: " + type
                                             + " Algorithm: " + algorithm
                                             + " Attribute: " + cAttribute
-                                            + " is NOT allowed in provider: " + providerName);
+                                            + " is allowed: " + !cIsAllow 
+                                            + " in provider: " + providerName);
                         }
-                        return false;
+                        return !cIsAllow;
                     }
                 }
                 if (debug != null) {
@@ -824,18 +846,20 @@ public final class RestrictedSecurity {
                                     + " Service type: " + type
                                     + " Algorithm: " + algorithm
                                     + " Attribute: " + cAttribute
-                                    + " is allowed in provider: " + providerName);
+                                    + " is allowed: " + cIsAllow
+                                    + " in provider: " + providerName);
                 }
-                return true;
+                return cIsAllow;
             }
             if (debug != null) {
                 debug.println("Security constraints check."
                         + " Service type: " + type
                         + " Algorithm: " + algorithm
-                        + " is NOT allowed in provider " + providerName);
+                        + " is allowed: " + cIsAllow
+                        + " in provider: " + providerName);
             }
-            // No match for any constraint, return NOT allowed.
-            return false;
+            // No constraint found, return service allow: !cIsAllow.
+            return !cIsAllow;
         }
 
         /**
@@ -849,11 +873,11 @@ public final class RestrictedSecurity {
                 debug.println("Checking the provider " + providerName + " in restricted security mode.");
             }
 
-            // Remove argument, e.g. -NSS-FIPS, if there is.
+            // Remove argument, e.g. -NSS-FIPS, if present.
             int pos = providerName.indexOf('-');
             providerName = (pos < 0) ? providerName : providerName.substring(0, pos);
 
-            // Remove the provider class package name if there is.
+            // Remove the provider class package name if present.
             pos = providerName.lastIndexOf('.');
             providerName = (pos < 0) ? providerName : providerName.substring(pos + 1, providerName.length());
 
@@ -1038,12 +1062,14 @@ public final class RestrictedSecurity {
          * A class representing the constraints of a provider.
          */
         private static final class Constraint {
+            final boolean isAllow;
             final String type;
             final String algorithm;
             final String attributes;
 
-            Constraint(String type, String algorithm, String attributes) {
+            Constraint(boolean isAllow, String type, String algorithm, String attributes) {
                 super();
+                this.isAllow = isAllow;
                 this.type = type;
                 this.algorithm = algorithm;
                 this.attributes = attributes;
